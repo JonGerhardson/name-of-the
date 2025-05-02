@@ -5,6 +5,8 @@
 This project provides a pipeline to process audio files. It performs speech-to-text transcription, identifies different speakers, matches speakers against a database, and allows adding new speakers to the database. The output text can be formatted with punctuation and normalized numbers.
 
 It includes a web interface for uploading files and managing speaker enrollment, and a command-line tool for direct processing. It uses faster-whisper for transcription, pyannote.audio for diarization, and speech-brains for speaker embeddings. This app basically just glues them all together with a UI. 
+
+
 ## Setup & Usage
 
 This section describes how to set up and run the application using Docker (recommended) or manually.
@@ -15,16 +17,34 @@ Docker provides a containerized environment with all dependencies included.
 
 1.  **Prerequisites:**
     * Install Docker: [https://docs.docker.com/get-docker/](https://docs.docker.com/get-docker/)
+    * Install Git: [https://git-scm.com/book/en/v2/Getting-Started-Installing-Git](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git)
+    * **Hugging Face Account & Token:** You need a Hugging Face account ([https://huggingface.co/join](https://huggingface.co/join)) and an access token ([https://huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)) with `read` permissions.
+    * **Accept Model User Conditions:** You *must* accept the user conditions for the following models on the Hugging Face Hub before using them:
+        * `pyannote/speaker-diarization-3.1` ([https://huggingface.co/pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1))
+        * `pyannote/segmentation-3.0` ([https://huggingface.co/pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)) (Dependency of diarization)
     * Install NVIDIA Container Toolkit (if using GPU): [https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html). Ensure `faiss-gpu` is used in `requirements.txt` if needed.
 
-2.  **Build Docker Image:**
-    Open a terminal in the project directory and run:
+(Note: Hugging Face token is only needed to download the pyannote libraries, no transcription data is sent anywhere.) 
+
+2.  **Clone the Repository:**
+    Open a terminal and clone the project code:
+    ```bash
+    git clone [https://github.com/JonGerhardson/name-of-the.git](https://github.com/JonGerhardson/name-of-the.git)
+    cd name-of-the
+    ```
+
+3.  **Prepare Hugging Face Token File (Optional but Recommended):**
+    * Create a file named `hf-token.txt` in the cloned `name-of-the` directory.
+    * Paste your Hugging Face access token into this file and save it. This file will be used by the Docker container.
+
+4.  **Build Docker Image:**
+    From within the cloned project directory (`name-of-the`), run:
     ```bash
     docker build -t name-of-the-app .
     ```
     *(Using a Docker image tag like `name-of-the-app`)*
 
-3.  **Prepare Host Directories:**
+5.  **Prepare Host Directories:**
     Create directories on your computer to store output transcripts, logs, and the speaker database persistently:
     ```bash
     # mkdir -p ./host_audio_input # Input is handled per-job inside output dir
@@ -32,14 +52,14 @@ Docker provides a containerized environment with all dependencies included.
     ```
     *(Note: The application saves job-specific inputs and all outputs within subdirectories of the main output folder)*
 
-4.  **Run Docker Container:**
+6.  **Run Docker Container:**
     ```bash
     docker run -d --name name-of-the-instance \
       -p 5000:5000 \
       # Mount the main output directory
       -v $(pwd)/host_transcripts_output:/app/transcripts_output \
-      # Optionally provide a HF token file for gated models (like pyannote)
-      # -v /path/to/your/hf-token.txt:/app/hf-token.txt \
+      # Mount the HF token file (if you created it in step 3)
+      -v $(pwd)/hf-token.txt:/app/hf-token.txt \
       # Optionally set Celery broker/backend URLs if not using default Redis inside container
       # -e CELERY_BROKER_URL=redis://your-redis-host:6379/0 \
       # -e CELERY_RESULT_BACKEND=redis://your-redis-host:6379/0 \
@@ -49,7 +69,7 @@ Docker provides a containerized environment with all dependencies included.
       name-of-the-app
     ```
     *(Using a container name like `name-of-the-instance`)*
-    * The `entrypoint.sh` script (assumed) starts Redis (if included in image), the Celery worker, and the Gunicorn/Flask web server.
+    * The `entrypoint.sh` script (assumed) starts Redis (if included in image), the Celery worker, and the Gunicorn/Flask web server. The application will look for the token at `/app/hf-token.txt`.
 
 ### Manual Installation (Requires Python 3.x)
 
@@ -58,11 +78,16 @@ Use this method if you prefer not to use Docker.
 1.  **Prerequisites:**
     * Install `ffmpeg`: Instructions vary by operating system (e.g., `sudo apt update && sudo apt install ffmpeg` on Debian/Ubuntu).
     * Install and run `redis-server`: (e.g., `sudo apt install redis-server` or use a managed service). Ensure the Redis server is running.
+    * Install Git: [https://git-scm.com/book/en/v2/Getting-Started-Installing-Git](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git)
+    * **Hugging Face Account & Token:** You need a Hugging Face account ([https://huggingface.co/join](https://huggingface.co/join)) and an access token ([https://huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)) with `read` permissions.
+    * **Accept Model User Conditions:** You *must* accept the user conditions for the following models on the Hugging Face Hub before using them:
+        * `pyannote/speaker-diarization-3.1` ([https://huggingface.co/pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1))
+        * `pyannote/segmentation-3.0` ([https://huggingface.co/pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)) (Dependency of diarization)
 
 2.  **Clone Repository:**
     ```bash
-    git clone <your-repo-url>
-    cd <your-repo-name> # Replace with your actual repository directory name
+    git clone [https://github.com/JonGerhardson/name-of-the.git](https://github.com/JonGerhardson/name-of-the.git)
+    cd name-of-the
     ```
 
 3.  **Set up Python Environment:**
@@ -74,8 +99,9 @@ Use this method if you prefer not to use Docker.
     pip install gunicorn  # Included in Dockerfile, install if needed manually
     ```
 
-4.  **Prepare Configuration (Optional):**
-    * Create a Hugging Face token file (e.g., `hf-token.txt`) in the project root if needed for models like PyAnnote, and update `config.py` or use the default path (`/app/hf-token.txt` - adjust for manual setup).
+4.  **Prepare Configuration (Optional but Recommended):**
+    * Create a file named `hf-token.txt` in the project root (`name-of-the` directory).
+    * Paste your Hugging Face access token into this file and save it. The application will look for this file by default (path configured in `config.py`).
 
 5.  **Start Services:**
     Open three separate terminals in the project directory with the virtual environment activated.
@@ -105,9 +131,6 @@ Use this method if you prefer not to use Docker.
 1.  **Access Web Interface:**
     Open a web browser to `http://localhost:5000` (or the server's IP address).
 
-![image](https://github.com/user-attachments/assets/d2a636fe-b3c7-4bc6-824a-308734747c5d)
-
-
 2.  **Process Audio:**
     * Upload an audio file (`.wav`, `.mp3`, `.flac`, `.m4a`, `.ogg`).
     * Select processing options (Whisper model, normalization).
@@ -121,9 +144,6 @@ Use this method if you prefer not to use Docker.
     * Audio snippets (`.wav`) are generated (`audio_processing.save_speaker_snippet`) and served via `/snippets/<job_id>/<temp_id>`.
     * Text previews are extracted from the intermediate transcript.
     * Enter a name for each speaker to enroll and submit via the `/enroll` endpoint. This triggers the finalization task (`tasks.run_finalization_stage`).
-
-
-![Screenshot from 2025-05-01 23-43-25](https://github.com/user-attachments/assets/3cd0a14e-3266-4a6b-84ad-271491b12936)
 
 5.  **Download Results:**
     Once processing is complete (status `SUCCESS`), download links for the final transcript files (`final_normalized_transcript.txt`, `intermediate_identified_transcript.json`, `processing_log.log`) appear, served via `/results/<job_id>/<filename>`.
@@ -141,7 +161,7 @@ Use this method if you prefer not to use Docker.
 ## Features
 
 * **Audio Transcription:** Converts speech to text using `faster-whisper` (`models.load_whisper_model`).
-* **Speaker Diarization:** Determines speaker segments using `pyannote.audio` (`models.load_diarization_pipeline`).
+* **Speaker Diarization:** Determines speaker segments using `pyannote.audio` (`models.load_diarization_pipeline`). Requires HF token with accepted user conditions.
 * **Speaker Identification:** Matches speakers against known voice profiles using embeddings (`speechbrain/spkrec-ecapa-voxceleb` via `models.load_embedding_model`, `speaker_id.get_speaker_embeddings`) and FAISS similarity search (`persistence.load_or_create_faiss_index`, `speaker_id.identify_speakers`).
 * **Speaker Enrollment:** Adds new speakers (name and embedding) to the database (FAISS index, JSON map) via CLI prompts (`speaker_id.enroll_new_speakers_cli`) or programmatically based on Web UI input (`speaker_id.enroll_speakers_programmatic`).
 * **Text Post-Processing (`text_processing.py`):**
@@ -181,8 +201,8 @@ Use this method if you prefer not to use Docker.
 Configuration is managed through defaults in `config.py`, command-line arguments (`pipeline.py`), web UI form options, and environment variables.
 
 * **`config.py`:** Defines defaults for:
-    * File paths/names (Output base directory, log file, speaker DB files, intermediate/final transcripts, HF token file).
-    * Model names (Whisper, Diarization, Embedding, Punctuation).
+    * File paths/names (Output base directory, log file, speaker DB files, intermediate/final transcripts, **HF token file**).
+    * Model names (Whisper, **Diarization (requires token)**, Embedding, Punctuation).
     * Processing parameters (Devices, Similarity threshold, Min segment duration, Punctuation chunk size, Embedding dimension).
     * Normalization options (Enable flags, Filler word list).
     * Logging levels.
@@ -201,5 +221,8 @@ The application maintains a persistent speaker database within the configured ou
 * **`speaker_names.json`:** A JSON file mapping the internal FAISS index ID (integer) to the user-provided speaker name (string).
 
 These files are loaded at the start of identification and updated upon successful enrollment. Back up these files regularly if the enrolled speakers are important. Manual editing of these files is possible but requires caution to maintain consistency between the index and the map.
+
+---
+*README generated based on provided project files.*
 
 
