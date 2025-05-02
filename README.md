@@ -144,6 +144,12 @@ Use this method if you prefer not to use Docker.
     * Audio snippets (`.wav`) are generated (`audio_processing.save_speaker_snippet`) and served via `/snippets/<job_id>/<temp_id>`.
     * Text previews are extracted from the intermediate transcript.
     * Enter a name for each speaker to enroll and submit via the `/enroll` endpoint. This triggers the finalization task (`tasks.run_finalization_stage`).
+    * 
+    
+
+https://github.com/user-attachments/assets/ffa0560b-283d-4f3e-a9d6-f5187ac73ce0
+
+
 
 5.  **Download Results:**
     Once processing is complete (status `SUCCESS`), download links for the final transcript files (`final_normalized_transcript.txt`, `intermediate_identified_transcript.json`, `processing_log.log`) appear, served via `/results/<job_id>/<filename>`.
