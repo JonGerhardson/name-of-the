@@ -1,0 +1,9 @@
+Create an account at huggingface.co and then accept gated repo access for: 
+https://huggingface.co/pyannote/speaker-diarization-3.1
+https://huggingface.co/pyannote/segmentation-3.0
+
+then go to https://huggingface.co/settings/tokens and make a new token. 
+
+Check this box: "Read access to contents of all public gated repos you can access" 
+
+Copy the token, and replace this entire file with it. 
