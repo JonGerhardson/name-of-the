@@ -147,7 +147,10 @@ Use this method if you prefer not to use Docker.
     * 
     
 
-https://github.com/user-attachments/assets/ffa0560b-283d-4f3e-a9d6-f5187ac73ce0
+
+https://github.com/user-attachments/assets/70c819c3-537c-4c0d-8530-a31bc83bbf56
+
+
 
 
 
