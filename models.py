@@ -2,7 +2,9 @@
 import os
 import torch
 import logging
-from faster_whisper import WhisperModel
+# --- Import the standard OpenAI Whisper library ---
+import whisper
+# -------------------------------------------------
 from pyannote.audio import Pipeline
 from speechbrain.inference.classifiers import EncoderClassifier
 from transformers import pipeline as hf_pipeline # Alias to avoid name conflict
@@ -10,16 +12,21 @@ import config # Import your config module
 
 logger = logging.getLogger(__name__)
 
-def load_whisper_model(model_name, device, compute_type):
-    """Loads the Faster Whisper model."""
-    logger.info(f"Loading Faster Whisper model: {model_name} (Device: {device}, Compute: {compute_type})")
+# --- Modified function to load OpenAI Whisper model ---
+def load_whisper_model(model_name, device):
+    """Loads the OpenAI Whisper model."""
+    # Note: OpenAI Whisper doesn't use 'compute_type' like faster-whisper.
+    # The device ('cpu' or 'cuda') is passed directly.
+    logger.info(f"Loading OpenAI Whisper model: {model_name} (Device: {device})")
     try:
-        model = WhisperModel(model_name, device=device, compute_type=compute_type, local_files_only=False)
-        logger.info("Faster Whisper model loaded successfully.")
+        # Use whisper.load_model from the openai-whisper library
+        model = whisper.load_model(model_name, device=torch.device(device))
+        logger.info("OpenAI Whisper model loaded successfully.")
         return model
     except Exception as e:
-        logger.critical(f"CRITICAL: Error loading Faster Whisper model '{model_name}': {e}. Cannot proceed.", exc_info=True)
+        logger.critical(f"CRITICAL: Error loading OpenAI Whisper model '{model_name}': {e}. Cannot proceed.", exc_info=True)
         return None # Indicate failure
+# ------------------------------------------------------
 
 def load_diarization_pipeline(model_name, device, hf_token):
     """Loads the Pyannote diarization pipeline."""
@@ -53,9 +60,10 @@ def load_embedding_model(model_name, device, cache_dir):
         # Attempt to determine embedding dimension
         emb_dim = config.DEFAULT_EMBEDDING_DIM # Default
         try:
+            # Ensure dummy input is on the correct device
             dummy_input = torch.rand(1, 16000).to(torch.device(device)) # 1 sec dummy audio
             with torch.no_grad():
-                 output = model.encode_batch(dummy_input)
+                output = model.encode_batch(dummy_input)
             emb_dim = output.shape[-1]
             logger.info(f"Determined embedding dimension: {emb_dim}")
         except Exception as emb_e:
@@ -88,4 +96,3 @@ def load_punctuation_model(model_name, device):
     except Exception as e:
         logger.error(f"Error loading punctuation model '{model_name}': {e}. Punctuation step will be skipped.", exc_info=True)
         return None
-
