@@ -1,0 +1,83 @@
+version: '3.8' # Specify compose file version
+
+services:
+  # Redis service for Celery broker/backend
+  redis:
+    image: redis:7-alpine # Use the official Redis Alpine image (smaller)
+    container_name: myapp_redis
+    ports:
+      - "6379:6379" # Expose Redis port to host (optional, for debugging)
+    volumes:
+      - redis_data:/data # Persist Redis data using a named volume
+    restart: unless-stopped
+
+  # Flask web application service (using Gunicorn)
+  web:
+    build: . # Build the image from the Dockerfile in the current directory
+    container_name: myapp_web
+    ports:
+      - "5000:5000" # Map host port 5000 to container port 5000
+    volumes:
+      - .:/app # Mount current directory into /app in the container (for code changes)
+      - ./audio_input:/app/audio_input # Mount host audio_input
+      - ./transcripts_output:/app/transcripts_output # Mount host transcripts_output
+      - ./hf-token.txt:/app/hf-token.txt # Mount HF token file if needed inside container
+      - speaker_db_volume:/app/speaker_database # <-- Mount the central DB volume
+    environment:
+      # Pass environment variables to the web container
+      - FLASK_APP=web_ui.py # Or your main Flask app file
+      - FLASK_DEBUG=1 # Set to 0 for production
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-a_very_secret_key_please_change} # Use host env var or default
+      - SPEAKER_DB_DIR=/app/speaker_database # <-- Set central DB path env var
+      # Add any other environment variables your Flask app needs
+    command: gunicorn --bind 0.0.0.0:5000 --workers 4 web_ui:app # Command to run the web server
+    depends_on:
+      - redis # Ensure Redis starts before the web app
+    restart: unless-stopped
+    # --- GPU Configuration (Uncomment and configure if needed) ---
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1 # Request 1 GPU
+              capabilities: [gpu]
+    # -------------------------------------------------------------
+
+  # Celery worker service
+  worker:
+    build: . # Use the same image built for the web service
+    container_name: myapp_worker
+    volumes:
+      - .:/app # Mount current directory into /app
+      - ./audio_input:/app/audio_input # Mount host audio_input
+      - ./transcripts_output:/app/transcripts_output # Mount host transcripts_output
+      - speaker_db_volume:/app/speaker_database # <-- Mount the central DB volume
+    environment:
+      # Pass environment variables needed by the worker
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - SPEAKER_DB_DIR=/app/speaker_database # <-- Set central DB path env var
+      # Add any other environment variables your tasks need (e.g., API keys)
+    command: celery -A celery_app.celery worker --loglevel=info -P gevent # Command to start the Celery worker (adjust concurrency/pool as needed)
+    depends_on:
+      - redis # Ensure Redis starts before the worker
+    restart: unless-stopped
+    # --- GPU Configuration (Uncomment and configure if needed) ---
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1 # Request 1 GPU
+              capabilities: [gpu]
+    # -------------------------------------------------------------
+
+# Named volume for Redis data persistence
+# Named volume for the shared speaker database
+volumes:
+  redis_data:
+  speaker_db_volume: # <-- Define the central DB volume
+
