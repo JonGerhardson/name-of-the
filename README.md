@@ -25,6 +25,8 @@ docker compose up -d
 
 Web app will be running at http://localhost:5000
 
+You need a huggingface token to download pyannote.audio for the first time. See hf-token.txt in this repo for instructions. 
+
 
 ## Setup & Usage
 
