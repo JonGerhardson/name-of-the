@@ -7,6 +7,25 @@ This project provides a pipeline to process audio files. It performs speech-to-t
 It includes a web interface for uploading files and managing speaker enrollment, and a command-line tool for direct processing. It uses faster-whisper for transcription, pyannote.audio for diarization, and speech-brains for speaker embeddings. This app basically just glues them all together with a UI. 
 
 
+## Updates 5-5-2025
+
+Now uses docker-compose, defaults to running on GPU, remembers speaker IDs across different transcripts, allows for whisper prompting, and some other things I'm forgetting right now. Need to update this readme. To run: 
+
+```
+git clone https://github.com/JonGerhardson/name-of-the.git
+```
+```
+cd name-of-the
+
+docker compose build 
+
+docker compose up -d
+
+```
+
+Web app will be running at http://localhost:5000
+
+
 ## Setup & Usage
 
 This section describes how to set up and run the application using Docker (recommended) or manually.
