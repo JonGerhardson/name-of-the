@@ -7,8 +7,9 @@ torchaudio==2.3.1
 numpy<2.0
 
 # Core ASR and Diarization - Install from PyPI
-faster-whisper>=1.0.0 # Let pip handle dependencies including ctranslate2
+#faster-whisper>=1.0.0 # Let pip handle dependencies including ctranslate2
 pyannote.audio>=3.1.1,<3.4 # Keep pinned pyannote
+openai-whisper
 
 # Other dependencies
 speechbrain>=1.0.0
