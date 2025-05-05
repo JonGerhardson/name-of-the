@@ -126,4 +126,3 @@ def save_final_transcript(punctuated_turns, output_path):
         # Optionally re-raise
         # raise
 
-
