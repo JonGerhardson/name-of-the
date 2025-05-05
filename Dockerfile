@@ -7,14 +7,15 @@ WORKDIR /app
 # Install system dependencies
 # - ffmpeg: For audio/video processing
 # - git: Might be needed by some Python packages
-# - redis-server: For Celery message broker/backend (simple setup)
 # - ca-certificates: Often needed for HTTPS requests by libraries like requests/huggingface_hub
+# - iputils-ping: Useful for network debugging inside the container
+# --- REMOVED redis-server ---
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ffmpeg \
     git \
-    redis-server \
-    ca-certificates && \
+    ca-certificates \
+    iputils-ping && \
     # Clean up apt cache
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
@@ -27,8 +28,15 @@ COPY requirements.txt .
 
 # Install Python dependencies (including Flask, Celery, Redis client, Gunicorn)
 # Add gunicorn to requirements.txt if using it in entrypoint.sh
+# --- ADDED gevent ---
 RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir gunicorn # Install gunicorn here or add to requirements
+    pip install --no-cache-dir gunicorn gevent # Install gunicorn and gevent here
+# --------------------
+
+# --- Install openai-whisper ---
+# Install after requirements.txt to leverage Docker layer caching
+RUN pip install --no-cache-dir -U openai-whisper
+# -----------------------------
 
 # Copy all application code (pipeline modules, web UI, tasks)
 COPY *.py /app/
@@ -37,24 +45,24 @@ COPY *.py /app/
 COPY templates /app/templates
 COPY static /app/static
 
-# Copy the entrypoint script and make it executable
-COPY entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+# --- REMOVED entrypoint.sh copy and chmod ---
+# COPY entrypoint.sh /app/entrypoint.sh
+# RUN chmod +x /app/entrypoint.sh
+# --------------------------------------------
 
-# Create directories for uploads and outputs (volumes should override these)
-# These should ideally exist on the host and be mounted
+# Create directories for uploads and outputs (volumes defined in compose will manage these)
+# Still useful to ensure they exist within the image structure
 RUN mkdir -p /app/audio_input && \
     mkdir -p /app/transcripts_output && \
-    # Set permissions if needed, e.g., if running container as non-root
-    # Example: chown -R 1000:1000 /app/audio_input /app/transcripts_output
-    # Using nobody:nogroup might not work if the user doesn't exist or Gunicorn/Flask runs as root
-    echo "Directories created"
+    echo "Base directories created in image"
 
-# Expose the Flask port
+# Expose the Flask port (Gunicorn will bind to this)
 EXPOSE 5000
 
-# Set the entrypoint script to run when the container starts
-ENTRYPOINT ["/app/entrypoint.sh"]
+# --- REMOVED ENTRYPOINT ---
+# ENTRYPOINT ["/app/entrypoint.sh"]
+# --------------------------
 
-# Note: CMD is not needed when ENTRYPOINT uses exec for the final command
-
+# --- ADD default CMD (Optional but good practice) ---
+# This won't run when compose specifies a command, but helps if running the image directly
+CMD ["python", "web_ui.py"]
