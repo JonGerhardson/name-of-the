@@ -169,4 +169,3 @@ def save_speaker_snippet(
     except Exception as e:
         logger.error(f"Error saving snippet for {filename_base} to {output_dir}: {e}", exc_info=True)
         return None
-
