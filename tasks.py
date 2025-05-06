@@ -1,18 +1,22 @@
 # tasks.py
 # Updated to remove whisper_compute argument for openai-whisper compatibility
 # Removed faiss_file and map_file from pipeline_args for central DB
-# Integrated whisper_prompt functionality
-# Integrated whisper_language functionality
+# Added job-specific file logging setup/teardown
+# Corrected Whisper cache path variable name
+# Added passing of diarization_kwargs and merge heuristic controls
+# Fixed merge threshold default lookup
+# *** No major changes needed here as kwargs already handle passing diarization_kwargs ***
 import os
 import time
 import logging
 from celery import current_task
 import json
-from typing import Dict, List, Any, Optional # <-- Import Dict and other necessary types
+from typing import Dict, List, Any, Optional
 
 # Import the refactored pipeline function and config
-import pipeline
+import pipeline # Import pipeline to access its constants
 import config
+import log_setup # Or import specific functions
 
 # Import the Celery app instance
 from celery_app import celery as celery_app
@@ -24,48 +28,66 @@ logger = logging.getLogger(__name__)
 def run_identification_stage(self, input_audio_path: str, output_dir: str, **kwargs):
     """
     Celery task for the first stage: ASR, Diarization, Identification.
-    Returns info needed for potential UI enrollment, including timestamps
-    and the relative path to the original audio for timestamp-based playback.
-    Uses the central speaker database defined in config.py.
-    Accepts optional 'whisper_prompt' and 'whisper_language' kwargs. # <-- Updated docstring
+    Sets up job-specific file logging.
+    Accepts diarization tuning kwargs and merge heuristic controls via **kwargs.
+    Accepts output_formats list via **kwargs.
     """
     task_id = self.request.id
-    logger.info(f"Stage 1 task {task_id} received for audio: {input_audio_path}")
-    logger.info(f"Output directory for task {task_id}: {output_dir}")
-    logger.info(f"Received kwargs for task {task_id}: {kwargs}") # Prompt & lang will be visible here
+    job_log_file_path = os.path.join(output_dir, config.DEFAULT_LOG_FILENAME)
+    job_log_handler = None
 
+    # --- Setup Job-Specific Logging ---
     try:
+        root_logger = logging.getLogger()
+        job_log_handler = log_setup.add_job_log_handler(
+            logger_instance=root_logger,
+            log_file_path=job_log_file_path,
+            level=logging.DEBUG
+        )
+        logger.info(f"+++ Task {task_id} started: Logging to {job_log_file_path} +++")
+        logger.info(f"Stage 1 task {task_id} received for audio: {input_audio_path}")
+        logger.info(f"Output directory for task {task_id}: {output_dir}")
+        # Log received kwargs, be mindful if they contain sensitive info
+        # logger.info(f"Received kwargs for task {task_id}: {kwargs}")
+        logger.debug(f"Received kwargs keys for task {task_id}: {list(kwargs.keys())}")
+
+    except Exception as log_e:
+        logger.error(f"Failed to setup job-specific logging for task {task_id} to {job_log_file_path}: {log_e}", exc_info=True)
+
+    try: # Main task logic
         self.update_state(state='PROGRESS', meta={'status': 'Starting Identification Stage...', 'progress': 5})
 
-        # Prepare args, explicitly setting stage and disabling CLI enrollment
+        # Prepare args for run_full_pipeline using kwargs and defaults
         pipeline_args = {
             "input_audio": input_audio_path,
             "output_dir": output_dir,
-            "enrollment_stage": "identify_only", # <-- Set stage
-            "setup_logging_in_func": False, # Celery handles logging
-            # Pass through relevant overrides from web UI / kwargs
-            "whisper_model_name": kwargs.get('whisper_model', config.DEFAULT_WHISPER_MODEL),
-            "normalize_numbers": kwargs.get('normalize_numbers', config.DEFAULT_NORMALIZE_NUMBERS),
-            "remove_fillers": kwargs.get('remove_fillers', config.DEFAULT_REMOVE_FILLERS),
-            "log_file": config.DEFAULT_LOG_FILENAME, # Job specific log
-            "output_json_file": config.DEFAULT_IDENTIFIED_JSON_FILENAME, # Job specific intermediate output
-            "output_final_file": config.DEFAULT_FINAL_OUTPUT_FILENAME, # Job specific final output
-            "hf_token_path": config.DEFAULT_HF_TOKEN_FILE,
-            "whisper_device_requested": kwargs.get('whisper_device_requested', config.DEFAULT_WHISPER_DEVICE), # Pass from kwargs or use config default
-            "processing_device_requested": kwargs.get('processing_device_requested', config.DEFAULT_PROCESSING_DEVICE), # Pass from kwargs or use config default
+            "enrollment_stage": "identify_only",
+            "log_file": config.DEFAULT_LOG_FILENAME,
+            # Get values from kwargs, falling back to config defaults if not present
+            "output_formats": kwargs.get('output_formats', ['txt']), # Default to txt if not provided
+            "hf_token_path": config.DEFAULT_HF_TOKEN_FILE, # Usually not passed via UI
+            "whisper_model_name": kwargs.get('whisper_model', config.DEFAULT_WHISPER_MODEL), # 'whisper_model' is the key from web_ui.py
+            "whisper_device_requested": kwargs.get('whisper_device_requested', config.DEFAULT_WHISPER_DEVICE),
+            "whisper_cache_path": kwargs.get('whisper_cache_path', config.WHISPER_CACHE_DIR),
+            "processing_device_requested": kwargs.get('processing_device_requested', config.DEFAULT_PROCESSING_DEVICE),
             "embedding_model_name": kwargs.get('embedding_model_name', config.DEFAULT_EMBEDDING_MODEL),
             "punctuation_model_name": kwargs.get('punctuation_model_name', config.DEFAULT_PUNCTUATION_MODEL),
             "similarity_threshold": kwargs.get('similarity_threshold', config.DEFAULT_SIMILARITY_THRESHOLD),
             "min_segment_duration": kwargs.get('min_segment_duration', config.DEFAULT_MIN_SEGMENT_DURATION),
             "punctuation_chunk_size": kwargs.get('punctuation_chunk_size', config.DEFAULT_PUNCTUATION_CHUNK_SIZE),
-            "filler_words": kwargs.get('filler_words', config.DEFAULT_FILLER_WORDS), # Allow override from kwargs if needed
-            "whisper_prompt": kwargs.get('whisper_prompt', ''), # Get prompt from kwargs, default empty
-            # START <<< INTEGRATED UPDATE >>> Pass language to pipeline function
-            "whisper_language": kwargs.get('whisper_language', None) # Pass language (None for auto-detect in pipeline)
-            # END <<< INTEGRATED UPDATE >>>
+            "normalize_numbers": kwargs.get('normalize_numbers', config.DEFAULT_NORMALIZE_NUMBERS),
+            "remove_fillers": kwargs.get('remove_fillers', config.DEFAULT_REMOVE_FILLERS),
+            "filler_words": kwargs.get('filler_words', config.DEFAULT_FILLER_WORDS),
+            "whisper_prompt": kwargs.get('whisper_prompt', ''),
+            "whisper_language": kwargs.get('whisper_language', None),
+            # --- This is where the dict created in web_ui.py is passed ---
+            "diarization_kwargs": kwargs.get('diarization_kwargs', None), # Pass the dict or None
+            "enable_merge_heuristic": kwargs.get('enable_merge_heuristic', False),
+            "merge_gap_threshold_ms": kwargs.get('merge_gap_threshold_ms', config.DEFAULT_MERGE_GAP_THRESHOLD_MS)
         }
 
         logger.info(f"Calling pipeline.run_full_pipeline (identify_only) for task {task_id}")
+        logger.debug(f"Pipeline args for task {task_id}: {pipeline_args}") # Log the final args being passed
         self.update_state(state='PROGRESS', meta={'status': 'Running ASR/Diarization/ID...', 'progress': 10})
 
         # Execute Stage 1
@@ -73,119 +95,136 @@ def run_identification_stage(self, input_audio_path: str, output_dir: str, **kwa
 
         logger.info(f"Identification stage finished for task {task_id}. Status: {result.get('status')}")
 
+        # Process result
         if result.get("status") in ["success", "enrollment_required"]:
-            # Get the original list which includes embeddings and potentially timestamps
-            # Note: This info comes from the pipeline result, which processed it correctly
-            unknown_speakers_full_info = result.get("unknown_speakers", [])
-
-            # Extract relative path of the original audio (logic remains the same)
+            # Calculate relative path for audio playback in enrollment
             original_audio_relative_path = None
             try:
-                original_audio_relative_path = os.path.relpath(input_audio_path, output_dir)
-                if original_audio_relative_path.startswith(".."):
-                    logger.warning(f"Calculated relative path '{original_audio_relative_path}' seems outside output_dir '{output_dir}'. Using absolute path as fallback.")
-                    original_audio_relative_path = None # Fallback to None which will be handled later
-                else:
-                    logger.info(f"Calculated relative audio path: {original_audio_relative_path}")
-            except ValueError:
-                logger.warning(f"Could not determine relative path for {input_audio_path} within {output_dir}. Timestamps may not work.")
-                original_audio_relative_path = None # Ensure it's None if error
+                # Ensure both paths are absolute for reliable relpath calculation
+                abs_output_dir = os.path.abspath(output_dir)
+                abs_input_audio_path = os.path.abspath(input_audio_path)
 
-            # Prepare the data payload needed for both return and meta (logic remains the same)
+                # Check if input is already within output (e.g., in upload subdir)
+                if abs_input_audio_path.startswith(abs_output_dir):
+                     original_audio_relative_path = os.path.relpath(abs_input_audio_path, abs_output_dir)
+                     logger.info(f"Calculated relative audio path (within output): {original_audio_relative_path}")
+                else:
+                     # This case might indicate an issue if enrollment playback relies on relative paths
+                     logger.warning(f"Input audio path '{abs_input_audio_path}' is outside the job output directory '{abs_output_dir}'. Relative path calculation might be problematic for UI playback.")
+                     # Fallback or specific handling might be needed depending on deployment
+                     original_audio_relative_path = None # Or keep absolute path if UI can handle it
+
+            except ValueError as e:
+                logger.warning(f"Could not determine relative path for {input_audio_path} within {output_dir}: {e}. Timestamps/Playback might not work.")
+                original_audio_relative_path = None
+
+            # Prepare payload for the frontend status check
             data_payload = {
                 "status": result.get("status"),
                 "message": result.get("message"),
-                "unknown_speakers": result.get("unknown_speakers", []), # Pass the already processed list for UI
+                "unknown_speakers": result.get("unknown_speakers", []),
                 "temp_transcript_path": result.get("temp_transcript_path"),
                 "temp_enroll_info_path": result.get("temp_enroll_info_path"),
-                "output_dir": output_dir,
-                # Store original kwargs, INCLUDING the prompt and language if they were sent
-                "original_kwargs": result.get("original_kwargs", kwargs),
-                "original_audio_path": original_audio_relative_path
+                "output_dir": output_dir, # Needed for stage 2
+                # Pass back the original kwargs used, including the selected output formats and tuning params
+                "original_kwargs": pipeline_args, # Pass back the actual args used
+                "original_audio_path": original_audio_relative_path, # Relative path for UI playback
+                "log_filename": os.path.basename(job_log_file_path) if job_log_handler else None
+                # NOTE: output_files dict is only populated in stage 2 / full run
             }
 
-            # Validate path if enrollment required (logic remains the same)
-            if data_payload['status'] == 'enrollment_required' and not original_audio_relative_path:
-                logger.error(f"Enrollment required for task {task_id}, but could not determine original_audio_path relative to output dir. Aborting.")
-                self.update_state(state='FAILURE', meta={'status': 'Task Error', 'error': 'Could not determine path for original audio required for enrollment.'})
-                # Raising an exception here is better for Celery to mark failure clearly
-                raise ValueError("Could not determine path for original audio required for enrollment.")
+            # Specific check for enrollment requirement and audio path
+            if data_payload['status'] == 'enrollment_required' and data_payload['original_audio_path'] is None:
+                 logger.error(f"Enrollment required for task {task_id}, but could not determine original_audio_path relative to output dir. Aborting.")
+                 error_msg = 'Could not determine path for original audio required for enrollment playback.'
+                 self.update_state(state='FAILURE', meta={'status': 'Task Error', 'error': error_msg})
+                 raise ValueError(error_msg)
 
-            # Update final status for this stage (logic remains the same)
+            # Update task state based on pipeline outcome
             if data_payload['status'] == 'enrollment_required':
                 self.update_state(state='AWAITING_ENROLLMENT', meta=data_payload)
-            else: # Status == 'success'
-                success_meta = {'status': data_payload.get('message','Success'), 'progress': 100}
+            else: # Stage 1 success without enrollment
+                success_meta = {'status': data_payload.get('message','Success - No enrollment needed'), 'progress': 100}
+                # Although unlikely for identify_only, include output files if present
+                if result.get("output_files"):
+                    success_meta["output_files"] = result["output_files"]
                 self.update_state(state='SUCCESS', meta=success_meta)
 
-            # Return the payload
+            # Return the payload which becomes task.result
             return data_payload
         else:
-            # Handle errors from the pipeline function
+            # Pipeline returned an error status
             error_message = result.get('message', 'Identification stage failed.')
             logger.error(f"Identification stage failed for task {task_id}: {error_message}")
             self.update_state(state='FAILURE', meta={'status': 'Identification Failed', 'error': error_message})
-            # Raising an exception here is better for Celery to mark failure clearly
             raise RuntimeError(f"Identification stage failed: {error_message}")
 
     except Exception as e:
-        # Catch any unexpected error, including the ValueError raised above
         error_str = str(e)
         logger.error(f"Unexpected error in identification task {task_id}: {error_str}", exc_info=True)
         self.update_state(state='FAILURE', meta={'status': 'Task Error', 'error': error_str})
-        # Re-raise the original exception to ensure Celery handles it correctly
-        raise e
+        raise e # Reraise exception for Celery
+    finally:
+        # --- Cleanup Job-Specific Logging ---
+        if job_log_handler:
+            logger.info(f"--- Task {task_id} finished: Removing job log handler ---")
+            log_setup.remove_job_log_handler(logging.getLogger(), job_log_handler)
+        else:
+            logger.info(f"--- Task {task_id} finished (no job log handler to remove) ---")
 
 
 # --- Task for Stage 2: Finalize Enrollment & Post-Processing ---
-# NOTE: No changes needed here for language selection, as ASR is done in Stage 1.
-# The language used is stored in original_kwargs if needed for logging/reference.
 @celery_app.task(bind=True, name='tasks.run_finalization_stage')
 def run_finalization_stage(self,
-                             output_dir: str, # Directory containing temp files
-                             enrollment_map: Dict[str, str], # {temp_id: name} from UI
-                             original_kwargs: dict # Original UI options (including prompt/lang if sent)
-                             ):
+                           output_dir: str,
+                           enrollment_map: Dict[str, str],
+                           original_kwargs: dict # Contains all args from stage 1, including tuning params & output_formats
+                           ):
     """
     Celery task for the second stage: Programmatic enrollment and final processing.
-    Uses the central speaker database defined in config.py.
+    Sets up job-specific file logging. Generates final output formats based on original_kwargs.
     """
     task_id = self.request.id
-    logger.info(f"Stage 2 task {task_id} received for output dir: {output_dir}")
-    logger.info(f"Enrollment map: {enrollment_map}")
-    logger.info(f"Original kwargs received: {original_kwargs}") # Prompt & lang might be visible here, but aren't used
+    job_log_file_path = os.path.join(output_dir, config.DEFAULT_LOG_FILENAME)
+    job_log_handler = None
 
+    # --- Setup Job-Specific Logging ---
     try:
+        root_logger = logging.getLogger()
+        job_log_handler = log_setup.add_job_log_handler(
+            logger_instance=root_logger,
+            log_file_path=job_log_file_path,
+            level=logging.DEBUG
+        )
+        logger.info(f"+++ Task {task_id} (Stage 2) started: Logging to {job_log_file_path} +++")
+        logger.info(f"Stage 2 task {task_id} received for output dir: {output_dir}")
+        logger.info(f"Enrollment map: {enrollment_map}")
+        logger.debug(f"Original kwargs for task {task_id}: {original_kwargs}")
+
+    except Exception as log_e:
+        logger.error(f"Failed to setup job-specific logging for task {task_id} (Stage 2) to {job_log_file_path}: {log_e}", exc_info=True)
+
+    try: # Main task logic
         self.update_state(state='PROGRESS', meta={'status': 'Starting Finalization Stage...', 'progress': 5})
 
-        # Prepare args for the finalize stage
-        # Note: whisper_prompt/whisper_language are in original_kwargs but not needed/passed here.
+        # Prepare args for run_full_pipeline using original_kwargs passed from stage 1
+        # The pipeline function knows how to handle 'finalize_enrollment' stage
+        # We just need to ensure all necessary keys are present in original_kwargs
         pipeline_args = {
-            "input_audio": None, # Set to None as it's not needed directly
+            **original_kwargs, # Start with all original arguments
+            "input_audio": None, # Not needed for finalization
             "output_dir": output_dir,
-            "enrollment_stage": "finalize_enrollment", # <-- Set stage
-            "enrollment_map": enrollment_map, # Pass the map from UI
-            "setup_logging_in_func": False,
-            # Get relevant processing options from original_kwargs
-            "normalize_numbers": original_kwargs.get('normalize_numbers', config.DEFAULT_NORMALIZE_NUMBERS),
-            "remove_fillers": original_kwargs.get('remove_fillers', config.DEFAULT_REMOVE_FILLERS),
-            # Add other necessary args, using defaults or original_kwargs
-            "log_file": config.DEFAULT_LOG_FILENAME, # Job specific log
-            "output_json_file": config.DEFAULT_IDENTIFIED_JSON_FILENAME, # Job specific final intermediate
-            "output_final_file": config.DEFAULT_FINAL_OUTPUT_FILENAME, # Job specific final TXT
-            "hf_token_path": config.DEFAULT_HF_TOKEN_FILE,
-            "processing_device_requested": original_kwargs.get('processing_device_requested', config.DEFAULT_PROCESSING_DEVICE),
-            "punctuation_model_name": original_kwargs.get('punctuation_model_name', config.DEFAULT_PUNCTUATION_MODEL),
-            "punctuation_chunk_size": original_kwargs.get('punctuation_chunk_size', config.DEFAULT_PUNCTUATION_CHUNK_SIZE),
-            "filler_words": original_kwargs.get('filler_words', config.DEFAULT_FILLER_WORDS),
-            # Arguments needed indirectly (for loading models/DB): embedding_model_name
-            "embedding_model_name": original_kwargs.get('embedding_model_name', config.DEFAULT_EMBEDDING_MODEL),
-            # Pass similarity threshold and duration in case they are needed for future logic or reloading db
-            "similarity_threshold": original_kwargs.get('similarity_threshold', config.DEFAULT_SIMILARITY_THRESHOLD),
-            "min_segment_duration": original_kwargs.get('min_segment_duration', config.DEFAULT_MIN_SEGMENT_DURATION),
+            "enrollment_stage": "finalize_enrollment",
+            "enrollment_map": enrollment_map,
+            "log_file": config.DEFAULT_LOG_FILENAME,
+            # output_formats should already be in original_kwargs
         }
 
+        # Remove keys that might confuse the finalize stage if they exist from stage 1 kwargs
+        pipeline_args.pop('input_audio_path', None) # Use input_audio=None instead
+
         logger.info(f"Calling pipeline.run_full_pipeline (finalize_enrollment) for task {task_id}")
+        logger.debug(f"Pipeline args for task {task_id} (Stage 2): {pipeline_args}")
         self.update_state(state='PROGRESS', meta={'status': 'Enrolling speakers & finalizing...', 'progress': 10})
 
         # Execute Stage 2
@@ -193,21 +232,22 @@ def run_finalization_stage(self,
 
         logger.info(f"Finalization stage finished for task {task_id}. Status: {result.get('status')}")
 
+        # Process result
         if result.get("status") == "success":
             logger.info(f"Celery task {task_id} (finalization) completed successfully.")
-            # For SUCCESS, meta can be simple, result holds the payload
-            final_success_meta = {'status': 'Complete', 'progress': 100}
-            self.update_state(state='SUCCESS', meta=final_success_meta)
-            # Return final confirmation and paths
-            return {
-                "status": "success",
-                "message": result.get("message", "Processing complete!"),
-                "final_transcript_filename": os.path.basename(result.get("final_transcript_path", "")),
-                "intermediate_json_filename": os.path.basename(result.get("intermediate_json_path", "")),
-                "log_filename": os.path.basename(result.get("log_file_path", "")),
+            final_success_meta = {
+                'status': result.get("message", "Processing complete!"),
+                'progress': 100,
+                # Include the list of generated files for the UI
+                "output_files": result.get("output_files", {}), # Dict of format:filename
+                "log_filename": os.path.basename(job_log_file_path) if job_log_handler else None,
                 "db_updated": result.get('db_updated', False)
             }
+            self.update_state(state='SUCCESS', meta=final_success_meta)
+            # Return the payload which becomes task.result
+            return final_success_meta
         else:
+            # Pipeline returned an error status
             error_message = result.get('message', 'Finalization stage failed.')
             logger.error(f"Finalization stage failed for task {task_id}: {error_message}")
             self.update_state(state='FAILURE', meta={'status': 'Finalization Failed', 'error': error_message})
@@ -217,4 +257,13 @@ def run_finalization_stage(self,
         error_str = str(e)
         logger.error(f"Unexpected error in finalization task {task_id}: {error_str}", exc_info=True)
         self.update_state(state='FAILURE', meta={'status': 'Task Error', 'error': error_str})
-        raise e
+        raise e # Reraise exception for Celery
+    finally:
+        # --- Cleanup Job-Specific Logging ---
+        if job_log_handler:
+            logger.info(f"--- Task {task_id} (Stage 2) finished: Removing job log handler ---")
+            log_setup.remove_job_log_handler(logging.getLogger(), job_log_handler)
+        else:
+            logger.info(f"--- Task {task_id} (Stage 2) finished (no job log handler to remove) ---")
+
+

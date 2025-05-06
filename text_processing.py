@@ -369,3 +369,4 @@ def normalize_text_custom(
 
     # logger.debug(f"Normalization complete. Result: '{normalized_text[:100]}...'") # Reduce log verbosity
     return normalized_text
+

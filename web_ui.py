@@ -2,10 +2,11 @@
 # Updated to remove whisper_compute argument for openai-whisper compatibility
 # Integrated whisper_prompt and central DB directory check
 # Integrated whisper_language selection
+# *** ADDED: Handling for diarization tuning parameters ***
 import os
 import uuid
 import logging
-from flask import Flask, request, jsonify, render_template, url_for, send_from_directory, abort, current_app
+from flask import Flask, request, jsonify, render_template, url_for, send_from_directory, abort, current_app, flash, redirect # Added flash, redirect
 import tasks # Import your Celery tasks module
 from celery_app import celery # Import the celery instance
 import config # Import config for defaults
@@ -18,7 +19,7 @@ ALLOWED_EXTENSIONS = {'wav', 'mp3', 'flac', 'm4a', 'ogg'}
 # --- App Initialization ---
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.config['OUTPUT_FOLDER'] = config.DEFAULT_OUTPUT_DIR # Load from config
-app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'a_default_secret_key_CHANGE_ME')
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'a_default_secret_key_CHANGE_ME') # Needed for flash messages
 
 # --- Logging Setup ---
 log_format = '%(asctime)s - %(name)s:%(lineno)d - %(levelname)s - %(message)s'
@@ -52,11 +53,18 @@ def upload_file():
     current_app.logger.debug("Received request to /upload")
     if 'file' not in request.files:
         current_app.logger.warning("Upload attempt with no file part.")
-        return jsonify({'error': 'No file part'}), 400
+        # Use flash for user feedback
+        flash('No audio file part in the request.', 'error')
+        # Redirect or render template with error
+        return redirect(url_for('index')) # Redirect back to index
+        # return jsonify({'error': 'No file part'}), 400 # Alternative API style response
+
     file = request.files['file']
     if file.filename == '':
         current_app.logger.warning("Upload attempt with no selected file.")
-        return jsonify({'error': 'No selected file'}), 400
+        flash('No audio file selected.', 'error')
+        return redirect(url_for('index'))
+        # return jsonify({'error': 'No selected file'}), 400
 
     if file and allowed_file(file.filename):
         job_id = str(uuid.uuid4())
@@ -71,30 +79,86 @@ def upload_file():
             current_app.logger.info(f"Job {job_id}: File '{original_filename}' saved to {save_path}")
         except OSError as e:
             current_app.logger.error(f"Job {job_id}: Error creating directories or saving file: {e}", exc_info=True)
-            return jsonify({'error': 'Server error creating directories or saving file'}), 500
+            flash('Server error creating directories or saving file.', 'error')
+            return redirect(url_for('index'))
+            # return jsonify({'error': 'Server error creating directories or saving file'}), 500
         except Exception as e:
             current_app.logger.error(f"Job {job_id}: Error saving uploaded file: {e}", exc_info=True)
-            return jsonify({'error': 'Server error saving file'}), 500
+            flash('Server error saving file.', 'error')
+            return redirect(url_for('index'))
+            # return jsonify({'error': 'Server error saving file'}), 500
 
         try:
-            # Get optional arguments from form data
+            # --- Get standard optional arguments ---
             whisper_model = request.form.get('whisper_model', config.DEFAULT_WHISPER_MODEL)
             normalize_numbers_str = request.form.get('normalize_numbers', 'false')
             normalize_numbers = normalize_numbers_str.lower() == 'true'
             remove_fillers_str = request.form.get('remove_fillers', 'false')
             remove_fillers = remove_fillers_str.lower() == 'true'
             whisper_prompt = request.form.get('whisper_prompt', '').strip()
-            # START <<< INTEGRATED UPDATE >>> Get the selected language (default to 'en')
             whisper_language = request.form.get('whisper_language', 'en')
-            # Treat 'auto' as None for Whisper's auto-detection
             if whisper_language == 'auto':
                 whisper_language = None # Whisper library expects None for auto-detect
-            # END <<< INTEGRATED UPDATE >>>
 
-            # Updated logging to include the language
-            current_app.logger.debug(f"Job {job_id}: Form options - whisper_model={whisper_model}, normalize_numbers={normalize_numbers}, remove_fillers={remove_fillers}, whisper_prompt='{whisper_prompt}', language='{whisper_language}'")
+            # --- Get Output Formats ---
+            output_formats = request.form.getlist('output_formats') # Gets list of checked values
+            if not output_formats: # Ensure at least one format is selected
+                output_formats = ['txt'] # Default to txt if none selected
+                flash('No output format selected, defaulting to Standard Text (.txt).', 'warning')
 
-            # Collect all relevant pipeline kwargs from form or config
+            # --- Get Merge Heuristic Controls ---
+            enable_merge_heuristic_str = request.form.get('enable_merge_heuristic', 'false')
+            enable_merge_heuristic = enable_merge_heuristic_str.lower() == 'true'
+            merge_gap_threshold_ms_str = request.form.get('merge_gap_threshold_ms', str(config.DEFAULT_MERGE_GAP_THRESHOLD_MS)).strip()
+            try:
+                merge_gap_threshold_ms = int(merge_gap_threshold_ms_str) if merge_gap_threshold_ms_str else config.DEFAULT_MERGE_GAP_THRESHOLD_MS
+                if merge_gap_threshold_ms < 0: merge_gap_threshold_ms = config.DEFAULT_MERGE_GAP_THRESHOLD_MS
+            except (ValueError, TypeError):
+                 merge_gap_threshold_ms = config.DEFAULT_MERGE_GAP_THRESHOLD_MS
+                 flash(f'Invalid Merge Gap Threshold value, using default: {merge_gap_threshold_ms}ms.', 'warning')
+
+            # --- START: Retrieve and Validate Pyannote Parameters ---
+            # Provide sensible defaults as strings first
+            default_min_duration = "0.05" # Example default - adjust as needed
+            default_cluster_threshold = "0.8" # Example default - adjust as needed
+
+            min_duration_on_str = request.form.get('min_duration_on', '').strip() # Default to empty string if not present
+            clustering_threshold_str = request.form.get('clustering_threshold', '').strip()
+
+            # Use default if the input is empty or invalid
+            min_duration_on = float(default_min_duration) # Start with default
+            if min_duration_on_str: # Only try to parse if user provided something
+                try:
+                    parsed_min_duration = float(min_duration_on_str)
+                    if 0 <= parsed_min_duration <= 1.0: # Basic sanity check range
+                        min_duration_on = parsed_min_duration
+                    else:
+                        flash(f'Min Segment Duration ({parsed_min_duration}s) out of range [0, 1], using default: {min_duration_on}s.', 'warning')
+                except (ValueError, TypeError):
+                    flash(f'Invalid Min Segment Duration value ("{min_duration_on_str}"), using default: {min_duration_on}s.', 'warning')
+
+            clustering_threshold = float(default_cluster_threshold) # Start with default
+            if clustering_threshold_str: # Only try to parse if user provided something
+                try:
+                    parsed_cluster_threshold = float(clustering_threshold_str)
+                    # Allow slightly wider range as optimal value might be > 1 sometimes
+                    if 0.1 <= parsed_cluster_threshold <= 1.5:
+                        clustering_threshold = parsed_cluster_threshold
+                    else:
+                         flash(f'Clustering Threshold ({parsed_cluster_threshold}) out of range [0.1, 1.5], using default: {clustering_threshold}.', 'warning')
+                except (ValueError, TypeError):
+                    flash(f'Invalid Clustering Threshold value ("{clustering_threshold_str}"), using default: {clustering_threshold}.', 'warning')
+
+            # Create the dictionary for pipeline kwargs
+            diarization_params = {
+                "segmentation.min_duration_on": min_duration_on,
+                "clustering.threshold": clustering_threshold
+            }
+            current_app.logger.debug(f"Job {job_id}: Using Diarization Params: {diarization_params}")
+            # --- END: Retrieve and Validate Pyannote Parameters ---
+
+
+            # Collect all relevant pipeline kwargs for the task
             task_kwargs = {
                 'whisper_model': whisper_model,
                 'embedding_model_name': config.DEFAULT_EMBEDDING_MODEL,
@@ -105,14 +169,17 @@ def upload_file():
                 'normalize_numbers': normalize_numbers,
                 'remove_fillers': remove_fillers,
                 'filler_words': config.DEFAULT_FILLER_WORDS,
-                'processing_device_requested': config.DEFAULT_PROCESSING_DEVICE, # Using config default
-                'whisper_device_requested': config.DEFAULT_WHISPER_DEVICE,     # Using config default
+                'processing_device_requested': config.DEFAULT_PROCESSING_DEVICE,
+                'whisper_device_requested': config.DEFAULT_WHISPER_DEVICE,
                 'whisper_prompt': whisper_prompt,
-                # START <<< INTEGRATED UPDATE >>> Add language to task kwargs
-                'whisper_language': whisper_language
-                # END <<< INTEGRATED UPDATE >>>
+                'whisper_language': whisper_language,
+                'output_formats': output_formats, # Pass selected formats
+                'enable_merge_heuristic': enable_merge_heuristic,
+                'merge_gap_threshold_ms': merge_gap_threshold_ms,
+                # --- Pass the new dictionary ---
+                'diarization_kwargs': diarization_params
             }
-            current_app.logger.debug(f"Job {job_id}: Prepared task_kwargs: {task_kwargs}")
+            current_app.logger.debug(f"Job {job_id}: Prepared final task_kwargs: {task_kwargs}")
 
             # Pass the *saved path* of the uploaded file
             task = tasks.run_identification_stage.delay(
@@ -121,14 +188,19 @@ def upload_file():
                 **task_kwargs
             )
             current_app.logger.info(f"Job {job_id}: Started Stage 1 Celery task {task.id}")
+            # Return task ID and job ID for the frontend to track
             return jsonify({'task_id': task.id, 'job_id': job_id}), 202 # Accepted
 
         except Exception as e:
-            current_app.logger.error(f"Job {job_id}: Error during task start: {e}", exc_info=True)
-            return jsonify({'error': 'Server error during task start'}), 500
+            current_app.logger.error(f"Job {job_id}: Error during task start preparation: {e}", exc_info=True)
+            flash('Server error preparing processing task.', 'error')
+            return redirect(url_for('index'))
+            # return jsonify({'error': 'Server error during task start'}), 500
     else:
         current_app.logger.warning(f"Upload attempt with disallowed file type: {file.filename}")
-        return jsonify({'error': 'File type not allowed'}), 400
+        flash(f'File type not allowed: {file.filename}. Allowed types: {", ".join(ALLOWED_EXTENSIONS)}', 'error')
+        return redirect(url_for('index'))
+        # return jsonify({'error': 'File type not allowed'}), 400
 
 
 @app.route('/status/<task_id>')
@@ -168,7 +240,7 @@ def task_status(task_id):
             if isinstance(task_return_value, dict):
                 response['status'] = task_return_value.get('message', response['status'])
             elif task_return_value is None:
-                current_app.logger.warning(f"Task {task_id} succeeded but returned None result.")
+                 current_app.logger.warning(f"Task {task_id} succeeded but returned None result.")
         elif task.state == 'FAILURE':
             error_info = str(task.info) if task.info else "Unknown error"
             response['status'] = task_meta.get('status', 'Failed') # Use meta status if available
@@ -219,17 +291,19 @@ def enroll_speakers():
         abs_output_folder = os.path.abspath(current_app.config['OUTPUT_FOLDER'])
         abs_output_dir = os.path.abspath(output_dir)
 
+        # Check if the resolved path starts with the output folder base path
+        # Also check if the last component matches the job_id for extra safety
         if not abs_output_dir.startswith(abs_output_folder) or os.path.basename(abs_output_dir) != job_id:
             current_app.logger.error(f"Potential path manipulation attempt or mismatch for job {job_id}, output_dir {output_dir}")
             return jsonify({'error': 'Invalid output directory or job ID mismatch'}), 400
 
         current_app.logger.info(f"Job {job_id}: Received enrollment request with map: {enrollment_map}")
 
-        # Start Stage 2 Task (passing original_kwargs which includes prompt/lang, though task doesn't use them)
+        # Start Stage 2 Task (passing original_kwargs which includes prompt/lang, etc.)
         finalize_task = tasks.run_finalization_stage.delay(
             output_dir=output_dir,
             enrollment_map=enrollment_map,
-            original_kwargs=original_kwargs
+            original_kwargs=original_kwargs # Pass the whole dict
         )
         current_app.logger.info(f"Job {job_id}: Started Stage 2 (Finalization) Celery task {finalize_task.id}")
         return jsonify({'finalize_task_id': finalize_task.id}), 202 # Accepted
@@ -293,15 +367,17 @@ def get_speaker_snippet(job_id, temp_id):
 
     # Basic Security (remains unchanged)
     secure_job_id = secure_filename(job_id)
-    if '..' in temp_id or temp_id.startswith('/'):
-        current_app.logger.warning(f"Path traversal attempt detected in temp_id: {temp_id}")
-        abort(400, description="Invalid speaker ID path.")
+    # Secure temp_id as well - prevent directory traversal using temp_id
+    secure_temp_id = secure_filename(temp_id)
+    if secure_temp_id != temp_id or '..' in temp_id or temp_id.startswith('/'):
+         current_app.logger.warning(f"Path traversal or invalid characters attempt detected in temp_id: {temp_id}")
+         abort(400, description="Invalid speaker ID path.")
     if secure_job_id != job_id:
         current_app.logger.warning(f"Invalid characters detected in snippet request job_id: {job_id}")
         abort(400, description="Invalid job ID format.")
 
-    # Construct filename (remains unchanged)
-    filename = f"snippet_{temp_id}.wav"
+    # Construct filename using secured temp_id
+    filename = f"snippet_{secure_temp_id}.wav"
     current_app.logger.debug(f"Constructed snippet filename: '{filename}'")
 
     try:
@@ -360,4 +436,6 @@ if __name__ == '__main__':
     logging.getLogger('flask.app').setLevel(log_level_to_set)
 
     logger.info(f"Starting Flask development server (Debug Mode: {app.debug})...")
+    # use_reloader=False is often recommended when running with Celery
     app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
+
