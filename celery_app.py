@@ -43,3 +43,4 @@ celery.conf.update(
 if __name__ == '__main__':
     # This block is less likely to be used directly when running via docker-compose commands
     celery.start()
+
